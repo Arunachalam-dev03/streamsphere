@@ -1,0 +1,757 @@
+'use client';
+
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import Hls from 'hls.js';
+import {
+  HiPlay, HiPause, HiVolumeUp, HiVolumeOff,
+  HiArrowsExpand, HiCog, HiOutlineChatAlt2, HiOutlineExternalLink
+} from 'react-icons/hi';
+import { formatDuration } from '@/lib/utils';
+
+interface VideoPlayerProps {
+  src: string;
+  poster?: string;
+  autoPlay?: boolean;
+  startTime?: number;
+  onTimeUpdate?: (time: number) => void;
+  isTheaterMode?: boolean;
+  onTheaterModeToggle?: () => void;
+  isAutoplayNext?: boolean;
+  onAutoplayNextToggle?: (val: boolean) => void;
+  onNextTrack?: () => void;
+  hasNextTrack?: boolean;
+  onEnded?: () => void;
+}
+
+export default function VideoPlayer({ 
+  src, 
+  poster, 
+  autoPlay = false, 
+  startTime = 0,
+  onTimeUpdate,
+  isTheaterMode = false,
+  onTheaterModeToggle,
+  isAutoplayNext = false,
+  onAutoplayNextToggle,
+  onNextTrack,
+  hasNextTrack = false,
+  onEnded
+}: VideoPlayerProps) {
+  const hasResumedRef = useRef(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [buffered, setBuffered] = useState(0);
+  const [qualities, setQualities] = useState<{ height: number; level: number }[]>([]);
+  const [currentQuality, setCurrentQuality] = useState(-1);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [isLooping, setIsLooping] = useState(false);
+  const [isCaptionsEnabled, setIsCaptionsEnabled] = useState(false);
+  
+  const [showSettings, setShowSettings] = useState(false);
+  const [activeMenu, setActiveMenu] = useState<'main' | 'quality' | 'speed' | 'quality-advanced'>('main');
+  const controlsTimeout = useRef<NodeJS.Timeout>();
+  const [overlayMsg, setOverlayMsg] = useState<{type: 'play'|'pause'|'volUp'|'volDown'|'mute'|'forward'|'backward', text?: string, id: number} | null>(null);
+  const tapDataRef = useRef({ count: 0, side: 'none', lastTime: 0, timeout: null as NodeJS.Timeout | null });
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  const triggerOverlay = useCallback((type: 'play'|'pause'|'volUp'|'volDown'|'mute'|'forward'|'backward', text?: string) => {
+    setOverlayMsg({ type, text, id: Date.now() });
+  }, []);
+  
+
+  
+  useEffect(() => {
+    if (!showSettings) {
+      setTimeout(() => setActiveMenu('main'), 300); // Wait for transition
+    }
+  }, [showSettings]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(event.target as Node)) {
+        setShowSettings(false);
+      }
+    };
+    if (showSettings) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showSettings]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !src) return;
+
+    if (src.endsWith('.m3u8') && Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        startLevel: 0,
+      });
+      hlsRef.current = hls;
+      hls.loadSource(src);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+        const levels = data.levels.map((level, index) => ({
+          height: level.height,
+          level: index,
+        }));
+        setQualities(levels);
+        // Resume from saved position
+        if (startTime > 0 && !hasResumedRef.current) {
+          video.currentTime = startTime;
+          hasResumedRef.current = true;
+        }
+        if (autoPlay) video.play().catch(() => {});
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        setCurrentQuality(data.level);
+      });
+
+      return () => {
+        hls.destroy();
+      };
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = src;
+      if (autoPlay) video.play().catch(() => {});
+    } else {
+      video.src = src;
+      if (autoPlay) video.play().catch(() => {});
+    }
+  }, [src, autoPlay]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const resetControlsTimer = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
+    controlsTimeout.current = setTimeout(() => {
+      if (isPlaying) setShowControls(false);
+    }, 3000);
+  }, [isPlaying]);
+
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      video.play();
+      triggerOverlay('play');
+    } else {
+      video.pause();
+      triggerOverlay('pause');
+    }
+  }, [triggerOverlay]);
+
+  const handleVideoTap = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    const now = Date.now();
+    const isMobile = typeof window !== 'undefined' && window.innerWidth < 640;
+    
+    if (!isMobile) {
+      const dt = now - tapDataRef.current.lastTime;
+      if (dt < 350) {
+        // Double-click on Desktop translates to Fullscreen toggle
+        toggleFullscreen();
+        // Since the first click toggled Play/Pause, the second click reverts it back
+        // so the video seamlessly continues entering/exiting fullscreen
+        togglePlay();
+        tapDataRef.current.count = 0;
+        tapDataRef.current.lastTime = 0;
+      } else {
+        togglePlay();
+        tapDataRef.current.lastTime = now;
+      }
+      return;
+    }
+
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    
+    let clientX = 0;
+    if ('changedTouches' in e && e.changedTouches.length > 0) {
+      clientX = e.changedTouches[0].clientX;
+    } else if ('clientX' in e) {
+      clientX = (e as React.MouseEvent).clientX;
+    }
+    
+    const clickX = clientX - rect.left;
+    const side = clickX < rect.width * 0.35 ? 'left' : (clickX > rect.width * 0.65 ? 'right' : 'center');
+
+    const dt = now - tapDataRef.current.lastTime;
+    
+    if (dt < 400 && tapDataRef.current.side === side && side !== 'center') {
+      tapDataRef.current.count += 1;
+      tapDataRef.current.lastTime = now;
+      
+      const secondsToSkip = (tapDataRef.current.count - 1) * 10;
+      const v = videoRef.current;
+      
+      if (side === 'right') {
+        triggerOverlay('forward', `+${secondsToSkip}s`);
+        if (v) v.currentTime = Math.min(v.duration, v.currentTime + 10);
+      } else {
+        triggerOverlay('backward', `-${secondsToSkip}s`);
+        if (v) v.currentTime = Math.max(0, v.currentTime - 10);
+      }
+      
+      if (tapDataRef.current.timeout) clearTimeout(tapDataRef.current.timeout);
+      
+      tapDataRef.current.timeout = setTimeout(() => {
+        tapDataRef.current.count = 0;
+        tapDataRef.current.side = 'none';
+      }, 700);
+      
+      return;
+    }
+    
+    tapDataRef.current.count = 1;
+    tapDataRef.current.side = side;
+    tapDataRef.current.lastTime = now;
+
+    setShowControls(prev => {
+      if (!prev) {
+        if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
+        controlsTimeout.current = setTimeout(() => {
+          setShowControls(false); 
+        }, 3000);
+        return true;
+      }
+      return false;
+    });
+  }, [togglePlay, triggerOverlay]);
+
+  const toggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setIsMuted(video.muted);
+    triggerOverlay(video.muted ? 'mute' : 'volUp');
+  }, [triggerOverlay]);
+
+  const toggleFullscreen = useCallback((e?: React.MouseEvent | KeyboardEvent) => {
+    if (e) e.stopPropagation();
+    const container = containerRef.current;
+    if (!container) return;
+    if (!document.fullscreenElement) {
+      container.requestFullscreen().then(() => {
+        if (screen.orientation && (screen.orientation as any).lock) {
+          (screen.orientation as any).lock('landscape').catch(() => {});
+        }
+      }).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => {
+        if (screen.orientation && (screen.orientation as any).unlock) {
+          (screen.orientation as any).unlock();
+        }
+      }).catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+      
+      const video = videoRef.current;
+      if (!video) return;
+
+      switch(e.key.toLowerCase()) {
+        case ' ':
+        case 'k':
+          e.preventDefault();
+          togglePlay();
+          resetControlsTimer();
+          break;
+        case 'f':
+          e.preventDefault();
+          toggleFullscreen(e);
+          break;
+        case 'm':
+          e.preventDefault();
+          toggleMute();
+          resetControlsTimer();
+          break;
+        case 'arrowup':
+          e.preventDefault();
+          setVolume(v => {
+            const newVol = Math.min(1, v + 0.1);
+            video.volume = newVol;
+            setIsMuted(newVol === 0);
+            triggerOverlay('volUp', `${Math.round(newVol * 100)}%`);
+            return newVol;
+          });
+          resetControlsTimer();
+          break;
+        case 'arrowdown':
+          e.preventDefault();
+          setVolume(v => {
+            const newVol = Math.max(0, v - 0.1);
+            video.volume = newVol;
+            setIsMuted(newVol === 0);
+            triggerOverlay(newVol === 0 ? 'mute' : 'volDown', `${Math.round(newVol * 100)}%`);
+            return newVol;
+          });
+          resetControlsTimer();
+          break;
+        case 'l':
+        case 'arrowright':
+          e.preventDefault();
+          video.currentTime = Math.min(video.duration, video.currentTime + 10);
+          triggerOverlay('forward', '+10s');
+          resetControlsTimer();
+          break;
+        case 'j':
+        case 'arrowleft':
+          e.preventDefault();
+          video.currentTime = Math.max(0, video.currentTime - 10);
+          triggerOverlay('backward', '-10s');
+          resetControlsTimer();
+          break;
+        case 'n':
+        case 'N':
+          if (e.shiftKey && onNextTrack && hasNextTrack) {
+            e.preventDefault();
+            onNextTrack();
+          }
+          break;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [togglePlay, toggleFullscreen, toggleMute, resetControlsTimer, triggerOverlay]);
+
+  const handleTimeUpdate = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    setCurrentTime(video.currentTime);
+    if (video.buffered.length > 0) {
+      setBuffered(video.buffered.end(video.buffered.length - 1));
+    }
+    onTimeUpdate?.(video.currentTime);
+  };
+
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const video = videoRef.current;
+    const bar = progressRef.current;
+    if (!video || !bar) return;
+    const rect = bar.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percentage = Math.max(0, Math.min(1, x / rect.width));
+    video.currentTime = percentage * video.duration;
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const vol = parseFloat(e.target.value);
+    video.volume = vol;
+    setVolume(vol);
+    setIsMuted(vol === 0);
+  };
+
+  const handleQualityChange = (level: number) => {
+    if (hlsRef.current) {
+      hlsRef.current.currentLevel = level;
+    }
+    setShowSettings(false);
+  };
+
+  const handleSpeedChange = (rate: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.playbackRate = rate;
+    setPlaybackRate(rate);
+    setShowSettings(false);
+  };
+
+  const toggleLoop = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.loop = !video.loop;
+    setIsLooping(video.loop);
+  };
+
+  const togglePiP = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await video.requestPictureInPicture();
+      }
+    } catch (error) {
+      console.error('Failed to toggle PiP', error);
+    }
+  };
+
+  const toggleCaptions = () => {
+    setIsCaptionsEnabled(!isCaptionsEnabled);
+  };
+
+  const getQualityLabel = (height: number) => {
+    if (height >= 2160) return `${height}p`; 
+    if (height >= 1440) return `${height}p`; 
+    return `${height}p`;
+  };
+
+  const fallbackQualities = [
+    { height: 2160, level: 7 },
+    { height: 1440, level: 6 },
+    { height: 1080, level: 5 },
+    { height: 720, level: 4 },
+    { height: 480, level: 3 },
+    { height: 360, level: 2 },
+    { height: 240, level: 1 },
+    { height: 144, level: 0 },
+  ];
+
+  const displayQualities = qualities.length > 0 ? qualities : fallbackQualities;
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const bufferProgress = duration > 0 ? (buffered / duration) * 100 : 0;
+
+  const renderSettingsMenu = (
+    <div className="relative transition-transform duration-300 ease-[cubic-bezier(0.2,0,0,1)]">
+      {activeMenu === 'main' && (
+        <div className="animate-fade-in px-2">
+          <button onClick={toggleLoop} className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-white/10 rounded-lg transition-colors group outline-none">
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 text-white/70 group-hover:text-white transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+              <span className="text-white/90 group-hover:text-white transition-colors">Loop Video</span>
+            </div>
+            <div className={`w-8 h-4 rounded-full transition-colors relative ${isLooping ? 'bg-[#3EA6FF]' : 'bg-white/20'}`}>
+              <div className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-all ${isLooping ? 'translate-x-[14px]' : 'left-0.5'}`} />
+            </div>
+          </button>
+          <button onClick={() => setActiveMenu('speed')} className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-white/10 rounded-lg transition-colors group outline-none">
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 text-white/70 group-hover:text-white transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M10 8v8l6-4-6-4zm11.86-2.06C13.25 2.37 14.77 2 16.5 2 20.64 2 24 5.36 24 9.5c0 3.25-2.07 6-4.93 7.06l-.57-1.92A5.5 5.5 0 0016.5 4c-3.03 0-5.5 2.47-5.5 5.5v.5h-2V9.5C9 5.36 12.36 2 16.5 2z"/></svg>
+              <span className="text-white/90 group-hover:text-white transition-colors">Playback Speed</span>
+            </div>
+            <div className="flex items-center text-white/60 group-hover:text-white transition-colors">
+              <span className="mr-2 text-[13px]">{playbackRate === 1 ? 'Normal' : `${playbackRate}x`}</span>
+              <span className="text-lg leading-none">›</span>
+            </div>
+          </button>
+          <button onClick={() => setActiveMenu('quality')} className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-white/10 rounded-lg transition-colors group outline-none">
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 text-white/70 group-hover:text-white transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.89-2-2-2zm-6.5 13H11v-4H9.5v-2h3v6zm3.5 0h-1.5V9H16v8z"/></svg>
+              <span className="text-white/90 group-hover:text-white transition-colors">Quality</span>
+            </div>
+            <div className="flex items-center text-white/60 group-hover:text-white transition-colors">
+              <span className="mr-2 text-[13px]">{currentQuality === -1 ? 'Auto' : getQualityLabel(displayQualities.find(q => q.level === currentQuality)?.height || 0)}</span>
+              <span className="text-lg leading-none">›</span>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {activeMenu === 'speed' && (
+        <div className="animate-fade-in">
+          <button onClick={() => setActiveMenu('main')} className="w-full px-4 py-3 flex items-center gap-4 hover:bg-white/10 transition-colors outline-none mb-1 text-white/90 font-medium">
+            <span className="text-2xl leading-none -mt-1 text-white/70">‹</span>
+            Playback Speed
+          </button>
+          <div className="py-1 max-h-60 overflow-y-auto scrollbar-hide px-2">
+            {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(rate => (
+              <button key={rate} onClick={() => handleSpeedChange(rate)} className="w-full px-4 py-2.5 text-left hover:bg-white/10 rounded-lg transition-colors flex items-center outline-none relative">
+                <div className="w-5 flex items-center justify-center mr-3">
+                  {playbackRate === rate && <svg className="w-4 h-4 text-white" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>}
+                </div>
+                <span className="text-white/90">{rate === 1 ? 'Normal' : `${rate}x`}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeMenu === 'quality' && (
+        <div className="animate-fade-in">
+          <button onClick={() => setActiveMenu('main')} className="w-full px-4 py-3 flex items-center gap-4 hover:bg-white/10 transition-colors outline-none mb-1 text-white/90 font-medium border-b border-white/5">
+            <span className="text-2xl leading-none -mt-1 text-white/70">‹</span>
+            Quality
+          </button>
+          <div className="py-2 px-2 space-y-1">
+            <button onClick={() => handleQualityChange(-1)} className="w-full px-4 py-2 text-left hover:bg-white/10 rounded-lg transition-colors flex flex-col outline-none relative group">
+              <div className="flex items-center">
+                <div className="w-5 flex items-center justify-center mr-3">
+                  {currentQuality === -1 && <svg className="w-4 h-4 text-white" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>}
+                </div>
+                <span className="text-white/90 font-medium">Auto ({getQualityLabel(displayQualities[0]?.height || 1080)})</span>
+              </div>
+              <span className="text-[12px] text-white/50 ml-8 group-hover:text-white/70">Recommended for your conditions</span>
+            </button>
+            <button onClick={() => handleQualityChange(displayQualities.length - 1)} className="w-full px-4 py-2 text-left hover:bg-white/10 rounded-lg transition-colors flex flex-col outline-none relative group">
+              <div className="flex items-center">
+                <div className="w-5 flex items-center justify-center mr-3"></div>
+                <span className="text-white/90 font-medium">Higher picture quality</span>
+              </div>
+              <span className="text-[12px] text-white/50 ml-8 group-hover:text-white/70">Uses more data</span>
+            </button>
+            <button onClick={() => handleQualityChange(0)} className="w-full px-4 py-2 text-left hover:bg-white/10 rounded-lg transition-colors flex flex-col outline-none relative group">
+              <div className="flex items-center">
+                <div className="w-5 flex items-center justify-center mr-3"></div>
+                <span className="text-white/90 font-medium">Data saver</span>
+              </div>
+              <span className="text-[12px] text-white/50 ml-8 group-hover:text-white/70">Lower picture quality</span>
+            </button>
+            <div className="mx-4 my-2 border-t border-white/10"></div>
+            <button onClick={() => setActiveMenu('quality-advanced')} className="w-full px-4 py-2 text-left hover:bg-white/10 rounded-lg transition-colors flex flex-col outline-none relative group">
+              <div className="flex items-center justify-between w-full">
+                <div className="flex items-center">
+                  <div className="w-5 flex items-center justify-center mr-3"></div>
+                  <span className="text-white/90 font-medium">Advanced</span>
+                </div>
+                <span className="text-lg leading-none text-white/60 group-hover:text-white">›</span>
+              </div>
+              <span className="text-[12px] text-white/50 ml-8 group-hover:text-white/70">Select a specific resolution</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeMenu === 'quality-advanced' && (
+        <div className="animate-fade-in">
+          <button onClick={() => setActiveMenu('quality')} className="w-full px-4 py-3 flex items-center gap-4 hover:bg-white/10 transition-colors outline-none mb-1 text-white/90 font-medium border-b border-white/5">
+            <span className="text-2xl leading-none -mt-1 text-white/70">‹</span>
+            Quality for current video
+          </button>
+          <div className="py-2 max-h-60 overflow-y-auto scrollbar-hide px-2">
+            {[...displayQualities].reverse().map(q => (
+              <button key={q.level} onClick={() => handleQualityChange(q.level)} className="w-full px-4 py-2.5 text-left hover:bg-white/10 rounded-lg transition-colors flex items-center justify-between group outline-none">
+                <div className="flex items-center w-full">
+                  <div className="w-5 flex items-center justify-center mr-3">
+                    {currentQuality === q.level && <svg className="w-4 h-4 text-white" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>}
+                  </div>
+                  <span className="text-white/90 group-hover:text-white flex items-center w-full transition-colors">
+                    {getQualityLabel(q.height)}
+                    {q.height >= 720 && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ml-2 ${q.height >= 2160 ? 'bg-[#FF0000] text-white' : q.height >= 1440 ? 'bg-white/20 text-white' : 'bg-[#CC0000] text-white'}`}>
+                        {q.height >= 2160 ? '4K' : q.height >= 1440 ? '2K' : 'HD'}
+                      </span>
+                    )}
+                    {q.height >= 2160 && (
+                       <span className="ml-auto text-[11px] text-white/40 group-hover:text-white/60">Premium</span>
+                    )}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const activeHeight = currentQuality === -1 
+    ? (displayQualities[0]?.height || 0) 
+    : (displayQualities.find(q => q.level === currentQuality)?.height || 0);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`relative group transition-all duration-300 bg-black ${
+        isFullscreen ? 'w-full h-full rounded-none fixed inset-0 z-[9999]' : 'rounded-xl aspect-video relative'
+      } ${isTheaterMode && !isFullscreen ? 'max-h-[80vh] w-full flex justify-center' : ''}`}
+      onMouseMove={resetControlsTimer}
+      onMouseLeave={() => isPlaying && setShowControls(false)}
+    >
+      <div className={`absolute inset-0 w-full h-full z-0 ${isFullscreen ? 'rounded-none' : 'rounded-xl overflow-hidden'}`}>
+        <video
+          ref={videoRef}
+          poster={poster}
+          className="w-full h-full object-contain cursor-pointer relative z-0"
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onTimeUpdate={handleTimeUpdate}
+          onEnded={onEnded}
+          onLoadedMetadata={() => {
+            const video = videoRef.current;
+            if (video) setDuration(video.duration);
+          }}
+          playsInline
+        />
+
+        {overlayMsg && (
+          <div key={overlayMsg.id} className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+            <div className="flex flex-col items-center justify-center animate-flash-action">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-black/60 flex items-center justify-center text-white backdrop-blur-sm shadow-2xl mb-3">
+                {overlayMsg.type === 'play' && <HiPlay className="w-8 h-8 sm:w-10 sm:h-10 ml-1" />}
+                {overlayMsg.type === 'pause' && <HiPause className="w-8 h-8 sm:w-10 sm:h-10" />}
+                {overlayMsg.type === 'volUp' && <HiVolumeUp className="w-8 h-8 sm:w-10 sm:h-10" />}
+                {overlayMsg.type === 'volDown' && <HiVolumeUp className="w-8 h-8 sm:w-10 sm:h-10 opacity-70" />}
+                {overlayMsg.type === 'mute' && <HiVolumeOff className="w-8 h-8 sm:w-10 sm:h-10" />}
+                {overlayMsg.type === 'forward' && <HiPlay className="w-8 h-8 sm:w-10 sm:h-10 ml-1" />}
+                {overlayMsg.type === 'backward' && <HiPlay className="w-8 h-8 sm:w-10 sm:h-10 mr-1 rotate-180" />}
+              </div>
+              {overlayMsg.text && (
+                <span className="text-white text-base sm:text-lg font-bold drop-shadow-md bg-black/50 px-4 py-1.5 rounded-full">{overlayMsg.text}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {isCaptionsEnabled && (
+          <div className="absolute bottom-24 left-0 right-0 flex justify-center pointer-events-none px-4 text-center">
+            <span className="bg-black/70 text-white px-2 py-1 text-sm sm:text-lg md:text-xl font-medium rounded shadow-sm backdrop-blur-sm">
+              [Auto-generated captions will appear here]
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Click surface for the video (catches clicks when controls are hidden) */}
+      <div 
+        className="absolute inset-0 z-[5] cursor-pointer touch-manipulation" 
+        onClick={handleVideoTap}
+      />
+
+      <div 
+        className={`absolute inset-0 text-white transition-opacity duration-300 z-10 cursor-pointer touch-manipulation ${showControls || !isPlaying || showSettings ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        onClick={handleVideoTap}
+      >
+        {/* Mobile top gradient */}
+        <div className="absolute top-0 inset-x-0 h-16 bg-gradient-to-b from-black/60 to-transparent sm:hidden pointer-events-none" />
+        
+        {/* Mobile center play/pause button */}
+        <div className={`absolute inset-0 flex items-center justify-center pointer-events-none ${showSettings ? 'hidden sm:flex' : 'flex sm:hidden'}`}>
+             <button 
+                onClick={(e) => { e.stopPropagation(); togglePlay(); }} 
+                onTouchEnd={(e) => { e.stopPropagation(); e.preventDefault(); togglePlay(); }}
+                className="p-5 bg-black/50 rounded-full text-white outline-none cursor-pointer touch-manipulation pointer-events-auto z-20"
+             >
+                 {isPlaying ? <HiPause className="w-12 h-12" /> : <HiPlay className="w-12 h-12 ml-1" />}
+             </button>
+         </div>
+
+        {/* Bottom bar container */}
+        <div className={`absolute bottom-0 inset-x-0 w-full bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-14 pb-1 pointer-events-auto flex flex-col justify-end ${isFullscreen ? 'rounded-none px-2' : 'rounded-b-xl'}`} onClick={(e) => e.stopPropagation()}>
+          <div ref={progressRef} className="relative h-[3px] mx-3 mb-2 bg-white/25 cursor-pointer group/progress hover:h-[5px] transition-all" onClick={handleSeek}>
+            <div className="h-full bg-white/40 absolute top-0 left-0" style={{ width: `${bufferProgress}%` }} />
+            <div className="h-full bg-red-600 relative" style={{ width: `${progress}%` }}>
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-[13px] h-[13px] rounded-full bg-red-600 scale-0 group-hover/progress:scale-100 transition-transform shadow-lg" />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between px-3 py-1">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <button onClick={togglePlay} className="hidden sm:block p-1 hover:bg-white/10 rounded-full transition-colors outline-none" title={isPlaying ? 'Pause (k)' : 'Play (k)'}>
+                {isPlaying ? <HiPause className="w-[28px] h-[28px]" /> : <HiPlay className="w-[28px] h-[28px] ml-0.5" />}
+              </button>
+              
+              {/* Next track visual placeholder hooked to next logic */}
+              <button onClick={onNextTrack} disabled={!hasNextTrack} className={`hidden sm:block p-1 rounded-full transition-colors outline-none ${hasNextTrack ? 'hover:bg-white/10 opacity-80 hover:opacity-100 cursor-pointer' : 'opacity-40 cursor-not-allowed'}`} title="Next (SHIFT+N)">
+                <svg className="w-6 h-6 fill-current" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+              </button>
+
+              <div className="hidden sm:flex items-center group/volume -ml-1">
+                <button onClick={toggleMute} className="p-1 hover:bg-white/10 rounded-full transition-colors outline-none" title="Mute (m)">
+                  {isMuted || volume === 0 ? <HiVolumeOff className="w-[22px] h-[22px]" /> : <HiVolumeUp className="w-[22px] h-[22px]" />}
+                </button>
+                <div className="w-0 overflow-hidden opacity-0 group-hover/volume:w-[52px] group-hover/volume:opacity-100 group-hover/volume:ml-1 transition-all duration-200 flex items-center">
+                  <input type="range" min="0" max="1" step="0.05" value={isMuted ? 0 : volume} onChange={handleVolumeChange} className="w-full h-[3px] accent-white cursor-pointer" />
+                </div>
+              </div>
+
+              <div className="text-[13px] font-normal text-white/90 tabular-nums ml-1 select-none flex items-center tracking-wide">
+                <span>{formatDuration(Math.floor(currentTime))}</span>
+                <span className="text-white/50 mx-1">/</span>
+                <span className="text-white/70">{formatDuration(Math.floor(duration))}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Autoplay toggle */}
+              <div onClick={() => onAutoplayNextToggle?.(!isAutoplayNext)} className="hidden sm:flex items-center px-2 cursor-pointer" title={`Auto-play is ${isAutoplayNext ? 'on' : 'off'}`}>
+                <div className={`w-[34px] h-[14px] rounded-full flex items-center px-[2px] relative transition-colors ${isAutoplayNext ? 'bg-white/20' : 'bg-white/10'}`}>
+                  <div className={`w-[18px] h-[18px] rounded-full absolute flex items-center justify-center shadow-lg transition-all ${isAutoplayNext ? 'bg-white right-[-2px]' : 'bg-white/60 left-[-2px]'}`}>
+                     {isAutoplayNext && <svg className="w-3 h-3 text-black ml-[1px]" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>}
+                  </div>
+                </div>
+              </div>
+
+              <button onClick={(e) => { e.stopPropagation(); toggleCaptions(); }} className="p-1.5 hover:bg-white/10 rounded-full transition-colors hidden sm:flex items-center justify-center outline-none relative opacity-80 hover:opacity-100" title="Subtitles/closed captions (c)">
+                <HiOutlineChatAlt2 className="w-[22px] h-[22px]" />
+                {isCaptionsEnabled && <div className="absolute bottom-1 left-1/2 -translate-x-1/2 w-4 h-[3px] bg-red-500 rounded-sm" />}
+              </button>
+
+              <div className="relative hidden sm:flex" ref={settingsRef}>
+                <button onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }} className="p-1.5 hover:bg-white/10 rounded-full transition-colors outline-none relative opacity-80 hover:opacity-100" title="Settings">
+                  <HiCog className={`w-[22px] h-[22px] transition-transform duration-500 ${showSettings ? 'rotate-90 text-white' : 'text-white/90'}`} />
+                  {activeHeight >= 720 && (
+                    <span className="absolute -top-[2px] -right-[4px] bg-red-600 text-white text-[8px] font-bold px-[3px] py-[1px] rounded-[3px] scale-90 pointer-events-none">
+                      {activeHeight >= 2160 ? '4K' : (activeHeight >= 1440 ? '2K' : 'HD')}
+                    </span>
+                  )}
+                </button>
+
+                {showSettings && (
+                  <div className="absolute bottom-[52px] right-0 bg-[#282828]/95 backdrop-blur-2xl rounded-2xl py-3 min-w-[260px] max-w-[300px] shadow-2xl border border-white/10 text-sm font-medium z-50 origin-bottom-right animate-scale-in overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                    {renderSettingsMenu}
+                  </div>
+                )}
+              </div>
+
+              <button onClick={(e) => { e.stopPropagation(); togglePiP(); }} className="p-1.5 hover:bg-white/10 rounded-full transition-colors hidden sm:flex items-center justify-center outline-none opacity-80 hover:opacity-100" title="Miniplayer (i)">
+                {/* SVG for youtube Miniplayer style */}
+                <svg className="w-[22px] h-[22px] fill-current" viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zm-10-7h9v6h-9v-6z"/></svg>
+              </button>
+
+              {onTheaterModeToggle && (
+                <button onClick={(e) => { e.stopPropagation(); onTheaterModeToggle(); }} className="p-1.5 hover:bg-white/10 rounded-full transition-colors hidden sm:flex items-center justify-center outline-none opacity-80 hover:opacity-100" title={isTheaterMode ? 'Default view' : 'Theater mode (t)'}>
+                  <svg className="w-[22px] h-[22px] fill-current" viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg>
+                </button>
+              )}
+
+              <button onClick={toggleFullscreen} className="p-1.5 hover:bg-white/10 rounded-full transition-colors outline-none opacity-80 hover:opacity-100" title="Full screen (f)">
+                <HiArrowsExpand className="w-[22px] h-[22px]" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="absolute top-2 right-2 flex items-center gap-1 z-[100] pointer-events-auto sm:hidden">
+          <button onClick={(e) => { e.stopPropagation(); toggleCaptions(); }} className="p-1.5 bg-black/30 hover:bg-white/20 rounded-full transition-colors flex items-center justify-center outline-none relative">
+            <HiOutlineChatAlt2 className="w-5 h-5" />
+            {isCaptionsEnabled && <div className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-4 h-[3px] bg-red-500 rounded-sm" />}
+          </button>
+          
+          <button onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }} className="p-1.5 bg-black/30 hover:bg-white/20 rounded-full transition-colors outline-none">
+            <HiCog className={`w-5 h-5 transition-transform duration-500 ${showSettings ? 'rotate-90 text-white' : 'text-white/90'}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile settings panel — rendered OUTSIDE the overflow-hidden container */}
+      {showSettings && (
+        <div className="sm:hidden">
+          <div className="fixed inset-0 bg-black/60 z-[9998]" onClick={(e) => { e.stopPropagation(); setShowSettings(false); }} />
+          <div className="fixed bottom-0 left-0 right-0 bg-[#282828] backdrop-blur-2xl rounded-t-2xl py-4 pb-6 shadow-2xl border-t border-white/10 text-sm font-medium z-[9999] origin-bottom animate-scale-in overflow-hidden max-h-[70vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mb-3" />
+            {renderSettingsMenu}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

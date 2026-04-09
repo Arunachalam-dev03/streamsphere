@@ -1,0 +1,21 @@
+{
+  "name": "StreamSphere",
+  "short_name": "StreamSphere",
+  "description": "Watch, upload, and share videos with the StreamSphere community",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f0f0f",
+  "theme_color": "#ef4444",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["entertainment", "video"],
+  "lang": "en",
+  "dir": "ltr"
+}

@@ -1,0 +1,5 @@
+src/routes/channel.routes.ts(107,24): error TS2503: Cannot find namespace 'Prisma'.
+src/routes/channel.routes.ts(210,32): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/services/video.service.ts(226,25): error TS2694: Namespace '"D:/16032026/youtube-ui/server/node_modules/.prisma/client/default".Prisma' has no exported member 'VideoOrderByWithRelationInput'.
+src/services/video.service.ts(230,25): error TS2694: Namespace '"D:/16032026/youtube-ui/server/node_modules/.prisma/client/default".Prisma' has no exported member 'VideoWhereInput'.
+src/services/video.service.ts(263,25): error TS2694: Namespace '"D:/16032026/youtube-ui/server/node_modules/.prisma/client/default".Prisma' has no exported member 'VideoWhereInput'.

@@ -1,0 +1,122 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: streamsphere-db
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "chown -R 999:999 /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data && exec docker-entrypoint.sh postgres"]
+    environment:
+      TZ: Asia/Kolkata
+      POSTGRES_USER: streamsphere
+      POSTGRES_PASSWORD: streamsphere_pass
+      POSTGRES_DB: streamsphere
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamsphere"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: streamsphere-redis
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "chown -R 999:999 /data && exec docker-entrypoint.sh redis-server"]
+    environment:
+      TZ: Asia/Kolkata
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO Object Storage (S3 compatible)
+  minio:
+    image: minio/minio:latest
+    container_name: streamsphere-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      TZ: Asia/Kolkata
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_BROWSER_REDIRECT_URL: https://streamsphere.arunai.pro/minio-console
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Backend API
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: streamsphere-server
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Kolkata
+      DATABASE_URL: postgresql://streamsphere:streamsphere_pass@postgres:5432/streamsphere
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: streamsphere
+      MINIO_USE_SSL: "false"
+      JWT_SECRET: 563f1ca62e884095859d5d320e1c6609d43280739404540af9235b946755bc789ea4bbe60f80c635764d796b61e438ab7e563e56308da8c816a29e9b8ae7fbbc
+      JWT_REFRESH_SECRET: 5fd99e3cb96b0dd5a84d9e4aefc9b2b7d67d80756a5e208f0f8697735903c345646a13e33827b585d9610e74286e0ae2ec6cdbd3b6f913276bf681ad786c40ae
+      PORT: 5000
+      NODE_ENV: production
+      CORS_ORIGIN: https://streamsphere.arunai.pro
+      RTMP_PORT: 1935
+      LIVE_HLS_PATH: ./media/live
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+    ports:
+      - "5000:5000"
+      - "1935:1935"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./media/live:/app/media/live
+
+  # Frontend
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: streamsphere-client
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Kolkata
+      NEXT_PUBLIC_API_URL: https://streamsphere.arunai.pro/api
+      NEXT_PUBLIC_STORAGE_URL: https://streamsphere.arunai.pro/storage
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+
+
