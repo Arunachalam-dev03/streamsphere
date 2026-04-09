@@ -1,22 +1,23 @@
-# 🌐 streamsphere
-
-<p align="center">
-  <strong>A production-ready video streaming platform built with modern technologies</strong>
-</p>
-
-<p align="center">
-  Next.js • Express • PostgreSQL • Redis • MinIO • FFmpeg • HLS Streaming
-</p>
+<div align="center">
+  <img src="client/public/favicon.svg" alt="StreamSphere Logo" width="120" />
+  <h1>StreamSphere</h1>
+  <p><strong>A production-ready video streaming platform built with modern technologies</strong></p>
+  <p>
+    React • Next.js • Express • PostgreSQL • Redis • MinIO • FFmpeg • HLS Streaming
+  </p>
+</div>
 
 ---
 
 ## ✨ Features
 
 ### 🎥 Video Platform
-- **Upload & Process** — Upload videos with automatic transcoding to 240p, 480p, 720p, 1080p
+- **Upload & Process** — Upload videos with automatic transcoding to 240p, 480p, 720p, 1080p, 4k
 - **HLS Streaming** — Adaptive bitrate streaming with quality selection
-- **Video Player** — Custom player with seek, volume, fullscreen, quality picker
-- **Thumbnails** — Auto-generated video thumbnails
+- **Video Player** — Custom player with seek, volume, fullscreen, PIP, and quality picker
+- **Vertical Shorts** — Fully featured TikTok-style swipeable Shorts feed with background buffers
+- **Live Streaming** — Integrated RTMP broadcasting with Nginx and Node-Media-Server backend
+- **Thumbnails** — Auto-generated or custom-uploaded video thumbnails
 
 ### 👤 User System
 - **JWT Auth** — Register, login, token refresh, role-based access
@@ -154,8 +155,12 @@ youtube-ui/
 │   │   │   ├── upload/       # Upload page
 │   │   │   ├── search/       # Search results
 │   │   │   ├── trending/     # Trending videos
-│   │   │   ├── channel/      # Channel page
+│   │   │   ├── shorts/       # Shorts swiping feed
+│   │   │   ├── live/         # Live streams portal
+│   │   │   ├── studio/       # Creator studio (analytics, assets)
+│   │   │   ├── [handle]/     # Dynamic channel page
 │   │   │   ├── subscriptions/
+│   │   │   ├── notifications/
 │   │   │   ├── history/
 │   │   │   └── auth/         # Login/Register
 │   │   ├── components/       # React Components
